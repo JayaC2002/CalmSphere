@@ -28,7 +28,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get("SECRET_KEY")
+SECRET_KEY = os.environ.get("SECRET_KEY", "django-insecure-wellmind-calmsphere-fallback-key-2026")
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'True') == 'True'
@@ -37,6 +37,7 @@ ALLOWED_HOSTS = [
     "calmsphere-q6s4.onrender.com",
     "localhost",
     "127.0.0.1",
+    "testserver",
 ]
 
 CSRF_TRUSTED_ORIGINS = [
@@ -47,14 +48,16 @@ CSRF_TRUSTED_ORIGINS = [
 # Application definition
 
 INSTALLED_APPS = [
-    'django.contrib.admin',
-    'django.contrib.auth',
-    'django.contrib.contenttypes',
+    'calmsphere.apps.MongoAdminConfig',
+    'calmsphere.apps.MongoAuthConfig',
+    'calmsphere.apps.MongoContentTypesConfig',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django_mongodb_backend',
     'core',
     'journal',
+    'chatbot',
 ]
 
 MIDDLEWARE = [
@@ -95,22 +98,26 @@ WSGI_APPLICATION = 'calmsphere.wsgi.application'
 
 import dj_database_url
 
-DATABASE_URL = os.environ.get('DATABASE_URL')
-if DATABASE_URL:
-    DATABASES = {
-        'default': dj_database_url.config(default=DATABASE_URL, conn_max_age=600)
+MONGODB_URI = os.environ.get('MONGODB_URI') or os.environ.get('DATABASE_URL') or 'mongodb://localhost:27017/'
+MONGODB_NAME = os.environ.get('MONGODB_NAME', 'calmsphere_db')
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django_mongodb_backend',
+        'HOST': MONGODB_URI,
+        'NAME': MONGODB_NAME,
     }
-else:
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.postgresql',
-            'NAME': 'calmsphere_db',
-            'USER': 'postgres',
-            'PASSWORD': '1234',  # leave empty if no password
-            'HOST': 'localhost',
-            'PORT': '5432',
-        }
-    }
+}
+
+DATABASE_ROUTERS = ["django_mongodb_backend.routers.MongoRouter"]
+
+DEFAULT_AUTO_FIELD = 'django_mongodb_backend.fields.ObjectIdAutoField'
+
+MIGRATION_MODULES = {
+    'admin': 'mongo_migrations.admin',
+    'auth': 'mongo_migrations.auth',
+    'contenttypes': 'mongo_migrations.contenttypes',
+}
 
 
 # Password validation

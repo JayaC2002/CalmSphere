@@ -6,7 +6,7 @@ import re
 import secrets
 from django.contrib.auth.decorators import login_required
 from django.utils.timezone import now, localdate
-from core.models import MoodEntry, UserProfile, OTPVerification, LoginActivity, UserReadingProgress, ReadingAnalytics, ChatMessage
+from core.models import MoodEntry, UserProfile, OTPVerification, LoginActivity, UserReadingProgress, ReadingAnalytics
 from journal.models import Journal
 from django.contrib.auth.models import User
 from django.contrib.auth import authenticate, login, logout
@@ -342,341 +342,14 @@ def monthly_report(request):
     return render(request, 'monthly_report.html', context)
 
 
-def get_time_based_greeting():
-    from django.utils.timezone import localtime
-    current_hour = localtime().hour
-    if 5 <= current_hour < 12:
-        return "Good morning! I hope you are starting your day with peace. I'm your CalmSphere AI companion. How can I support or help you center yourself today?"
-    elif 12 <= current_hour < 17:
-        return "Good afternoon! Taking a moment for yourself is so important. I'm your CalmSphere AI companion. How are you feeling today?"
-    elif 17 <= current_hour < 21:
-        return "Good evening! I hope your day has been gentle. I'm your CalmSphere AI companion. How can I support you tonight?"
-    else:
-        return "Good night! As the day winds down, I'm here if you want to chat or do a calming breathing exercise. I'm your CalmSphere AI companion. How are you feeling?"
-
-@login_required
-def chatbot_view(request):
-    import uuid
-    import urllib.request
-    from django.db.models import Max
-
-    # Handle "new" query parameter to start a fresh chat session
-    if request.GET.get('new') == 'true':
-        new_chat_id = f"chat_{uuid.uuid4().hex}"
-        return redirect(f"/chatbot/?chat_id={new_chat_id}")
-
-    # Get active chat_id from query params
-    chat_id = request.GET.get('chat_id')
-    if not chat_id:
-        # Try to find the most recent chat for the user
-        latest_msg = ChatMessage.objects.filter(user=request.user).exclude(session_key=None).order_by('-created_at').first()
-        if latest_msg and latest_msg.session_key:
-            return redirect(f"/chatbot/?chat_id={latest_msg.session_key}")
-        else:
-            # Create a brand new chat
-            new_chat_id = f"chat_{uuid.uuid4().hex}"
-            return redirect(f"/chatbot/?chat_id={new_chat_id}")
-
-    if request.method == 'POST':
-        try:
-            data = json.loads(request.body)
-            user_message = data.get('message', '').strip()
-            if not user_message:
-                return JsonResponse({'status': 'error', 'message': 'Empty message'}, status=400)
-
-            # Retrieve active session history
-            chat_history = ChatMessage.objects.filter(user=request.user, session_key=chat_id).order_by('created_at')
-
-            # Local safety trigger guardrail
-            safety_keywords = ['suicide', 'suicid', 'kill myself', 'kill me', 'self-harm', 'self harm', 'ending my life', 'end my life', 'want to die', 'cut myself', 'hopeless', 'no reason to live', 'hurt myself', 'harm myself', 'ending it all']
-            user_msg_lower = user_message.lower()
-            if any(kw in user_msg_lower for kw in safety_keywords):
-                reply = (
-                    "I hear how much pain you're in, and I want you to know that you are not alone. "
-                    "Your safety and well-being are incredibly important. Please reach out to someone who can help. "
-                    "You can talk to trusted family members, friends, or a mental health professional. "
-                    "If you need immediate support, please contact a local crisis hotline or emergency services. "
-                    "There are people who care and want to support you through this."
-                )
-                ChatMessage.objects.create(user=request.user, session_key=chat_id, role='user', content=user_message)
-                ChatMessage.objects.create(user=request.user, session_key=chat_id, role='assistant', content=reply)
-                return JsonResponse({'status': 'success', 'response': reply})
-
-            # Check if Gemini API key is configured
-            api_key = request.headers.get("X-Gemini-Key") or request.session.get("gemini_key") or settings.GEMINI_API_KEY
-            if not api_key:
-                # Fallback to local rule-based responses if no API key is provided
-                msg_lower = user_message.lower()
-                if any(w in msg_lower for w in ['sad', 'down', 'depressed', 'unhappy', 'cry']):
-                    reply = "I'm so sorry you're feeling down. Remember that it's okay to feel sad. You might find some comfort in our Guided Gratitude Meditation (try '/meditation/gratitude/') or by jotting down your thoughts in the Journal ('/journal/'). How does that sound?"
-                elif any(w in msg_lower for w in ['stressed', 'anxious', 'worry', 'panic', 'overwhelm', 'scared']):
-                    reply = "It sounds like you're carrying a lot right now. Please take a slow, deep breath. Try to relax your shoulders. I recommend trying the Breathing exercises ('/meditation/breathe/') or listening to some calming ambient sounds ('/sound/'). Would you like to try one of those?"
-                elif any(w in msg_lower for w in ['angry', 'mad', 'frustrated', 'annoyed', 'irritated']):
-                    reply = "It is completely valid to feel angry or frustrated. Try stepping away for a moment. Doing a short breathing session or listening to relaxing rain audio might help release some of this tension. Let me know if you want to try it!"
-                elif any(w in msg_lower for w in ['happy', 'excited', 'good', 'great', 'awesome', 'glad']):
-                    reply = "That's wonderful to hear! I'm so glad you're having a positive day. Share the good energy, or enjoy some light, focus-enhancing games like Chess or Bubble Pop!"
-                elif any(w in msg_lower for w in ['lonely', 'alone', 'isolated']):
-                    reply = "You're not alone—I'm here with you. Take things one moment at a time. Writing in your journal ('/journal/') can be a gentle way to express and be close to your feelings right now."
-                elif any(w in msg_lower for w in ['hello', 'hi', 'hey', 'greetings', 'morning', 'afternoon', 'evening', 'night']):
-                    reply = get_time_based_greeting()
-                else:
-                    reply = "Thank you for sharing that with me. Your feelings are valued. Remember to be gentle with yourself. Would you like to write in your Journal, do a calming meditation, or practice deep breathing?"
-                
-                ChatMessage.objects.create(user=request.user, session_key=chat_id, role='user', content=user_message)
-                ChatMessage.objects.create(user=request.user, session_key=chat_id, role='assistant', content=reply)
-                return JsonResponse({'status': 'success', 'response': reply})
-
-            # Call Gemini API
-            contents = []
-            for msg in chat_history:
-                role = "user" if msg.role == "user" else "model"
-                contents.append({
-                    "role": role,
-                    "parts": [{"text": msg.content}]
-                })
-
-            contents.append({
-                "role": "user",
-                "parts": [{"text": user_message}]
-            })
-
-            system_instruction = f"""
-            You are CalmSphere AI.
-            You are a highly conversational AI companion.
-            IMPORTANT:
-            You are NOT only a wellness assistant.
-            You are a natural conversational partner.
-            You can discuss:
-            - Daily life
-            - Friends
-            - Relationships
-            - College
-            - Studies
-            - Work
-            - Family
-            - Hobbies
-            - Games
-            - Movies
-            - Goals
-            - Stories
-            - Experiences
-            - Random conversations
-            When users tell stories:
-            DO NOT immediately give advice.
-            Instead:
-                1. React naturally.
-                2. Show curiosity.
-                3. Ask follow-up questions.
-                4. Continue the discussion.
-                Examples:
-                User:
-                "My friend got into a fight."
-                Good response:
-                "Oh wow, what happened? Was it a serious argument or just a misunderstanding?"
-                Bad response:
-                "Try meditation and journaling."
-                ---
-                Greeting behavior:
-                Hi
-                Hello
-                Hey
-                Respond naturally:
-                "Hey! How's your day going?"
-                or
-                "Hello! What's been happening today?"
-                Never repeat the same greeting.
-                ---
-                Personality:
-                - Friendly
-                - Warm
-                - Human-like
-                - Curious
-                - Supportive
-                - Casual
-                - Natural
-                Never sound robotic.
-                Never act like customer support.
-                Use contractions naturally:
-                "I'm"
-                "That's"
-                "You've"
-                ---
-                Wellness Support:
-                ONLY provide wellness advice when relevant.
-                If the user talks about stress,
-                anxiety,
-                sadness,
-                anger,
-                sleep problems,
-                or emotional struggles,
-                then provide support.
-                Otherwise simply continue the conversation.
-                ---
-                Suicide Safety:
-                If user expresses self-harm,
-                suicide,
-                hopelessness,
-                or wanting to die:
-                - Respond with empathy.
-                - Encourage reaching out to trusted people.
-                - Encourage professional help.
-                - Focus on safety.
-                Never provide harmful instructions.
-                ---
-                Conversation Style:
-                Keep responses between 2-8 sentences.
-                Avoid long essays.
-                Be engaging.
-                Ask questions naturally.
-                Continue conversations like a thoughtful friend.
-                Remember previous messages from the conversation history.
-                """
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-            payload = {
-                "contents": contents,
-                "systemInstruction": {
-                    "parts": [
-                        {"text": system_instruction}
-                    ]
-                }
-            }
-
-            req = urllib.request.Request(
-                url,
-                data=json.dumps(payload).encode('utf-8'),
-                headers={'Content-Type': 'application/json'},
-                method='POST'
-            )
-
-            with urllib.request.urlopen(req, timeout=12) as response:
-                res_data = json.loads(response.read().decode('utf-8'))
-                gemini_text = res_data['candidates'][0]['content']['parts'][0]['text']
-
-            ChatMessage.objects.create(user=request.user, session_key=chat_id, role='user', content=user_message)
-            ChatMessage.objects.create(user=request.user, session_key=chat_id, role='assistant', content=gemini_text)
-
-            return JsonResponse({"status": "success", "response": gemini_text})
-
-        except urllib.error.HTTPError as he:
-            try:
-                err_body = he.read().decode('utf-8')
-                err_json = json.loads(err_body)
-                err_msg = err_json.get("error", {}).get("message", str(he))
-            except Exception:
-                err_msg = str(he)
-            return JsonResponse({"status": "error", "message": f"Gemini API Error: {err_msg}"}, status=400)
-        except Exception as e:
-            return JsonResponse({"status": "error", "message": str(e)}, status=400)
-
-    # For GET request, get chat history messages
-    chat_history = ChatMessage.objects.filter(user=request.user, session_key=chat_id).order_by('created_at')
-
-    if not chat_history.exists():
-        greeting = get_time_based_greeting()
-        ChatMessage.objects.create(
-            user=request.user,
-            session_key=chat_id,
-            role='assistant',
-            content=greeting
-        )
-        chat_history = ChatMessage.objects.filter(user=request.user, session_key=chat_id).order_by('created_at')
-
-    # Get distinct session_keys for user to populate sidebar history list
-    chats = (
-        ChatMessage.objects.filter(user=request.user)
-        .exclude(session_key=None)
-        .order_by()
-        .values('session_key')
-        .annotate(last_activity=Max('created_at'))
-        .order_by('-last_activity')
-    )
-
-    # Build chat history list
-    chat_list = []
-    for c in chats:
-        s_key = c['session_key']
-        # Find first user message for title
-        first_user_msg = ChatMessage.objects.filter(user=request.user, session_key=s_key, role='user').order_by('created_at').first()
-        if first_user_msg:
-            title = first_user_msg.content[:40] + ('...' if len(first_user_msg.content) > 40 else '')
-        else:
-            first_msg = ChatMessage.objects.filter(user=request.user, session_key=s_key).order_by('created_at').first()
-            if first_msg:
-                title = first_msg.content[:40] + ('...' if len(first_msg.content) > 40 else '')
-            else:
-                title = "New Chat"
-
-        chat_list.append({
-            'session_key': s_key,
-            'title': title,
-            'last_activity': c['last_activity']
-        })
-
-    return render(request, 'chatbot.html', {
-        'chat_history': chat_history,
-        'chat_list': chat_list,
-        'current_chat_id': chat_id
-    })
-
-@login_required
-def clear_chatbot_view(request):
-    if request.method == 'POST':
-        chat_id = request.GET.get('chat_id') or request.POST.get('chat_id')
-        if not chat_id:
-            try:
-                data = json.loads(request.body)
-                chat_id = data.get('chat_id')
-            except Exception:
-                pass
-        
-        if chat_id:
-            ChatMessage.objects.filter(user=request.user, session_key=chat_id).delete()
-            return JsonResponse({'status': 'success', 'message': 'Conversation reset successfully.'})
-        return JsonResponse({'status': 'error', 'message': 'Missing chat_id.'}, status=400)
-    return JsonResponse({'status': 'error', 'message': 'Invalid request method.'}, status=400)
-
-@login_required
-def delete_chat_view(request):
-    if request.method == 'POST':
-        chat_id = request.GET.get('chat_id') or request.POST.get('chat_id')
-        if not chat_id:
-            try:
-                data = json.loads(request.body)
-                chat_id = data.get('chat_id')
-            except Exception:
-                pass
-                
-        if chat_id:
-            ChatMessage.objects.filter(user=request.user, session_key=chat_id).delete()
-            return JsonResponse({'status': 'success', 'message': 'Chat deleted successfully.'})
-        return JsonResponse({'status': 'error', 'message': 'Missing chat_id.'}, status=400)
-    return JsonResponse({'status': 'error', 'message': 'Invalid request method.'}, status=400)
-
 @login_required
 def mood_graph(request):
-    moods = MoodEntry.objects.filter(user=request.user).order_by('created_at')
+    return redirect('mood')
 
-    dates = [m.created_at.strftime("%d %b") for m in moods]
-    values = [m.mood for m in moods]
-
-    return render(request, 'mood_graph.html', {
-        'dates': dates,
-        'values': values
-    })
 
 @login_required
 def add_mood(request):
-    if request.method == "POST":
-        mood = int(request.POST.get("mood"))
-        today = now().date()
-
-        MoodEntry.objects.update_or_create(
-            user=request.user,
-            date=today,
-            defaults={'mood': mood}
-        )
-
-    return redirect('mood_graph')
+    return redirect('mood')
 
 @login_required
 def self_help(request):
@@ -729,12 +402,8 @@ def reading(request):
     return render(request, 'reading.html', context)
 
 @login_required
-def games(request):
-    return render(request, 'games.html')
-
-@login_required
 def breathing(request):
-    return render(request, 'breathing.html')
+    return redirect('breathe')
 
 @login_required
 def book_atomic(request):
@@ -838,14 +507,19 @@ def memory_game(request):
 def number_game(request):
     return render(request, 'number.html')
 
+@login_required
 def meditation(request):
     return render(request, "meditation.html")
 
+@login_required
 def breathe(request):
     return render(request, "breathe.html")
 
+@login_required
 def om(request):
     return render(request, "om.html")
+
+@login_required
 def bodyscan(request):
     return render(request, "bodyscan.html")
 
@@ -1266,7 +940,7 @@ def reading_ai(request):
         question = data.get("question", "")
         book_title = data.get("book_title", "the book")
         
-        api_key = request.headers.get("X-Gemini-Key") or request.session.get("gemini_key")
+        api_key = request.headers.get("X-Gemini-Key") or request.session.get("gemini_key") or getattr(settings, "GEMINI_API_KEY", None)
         
         # Simulated fallback if no API key is provided
         if not api_key:

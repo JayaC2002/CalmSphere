@@ -1,7 +1,8 @@
 from django.contrib import admin
-from django.urls import path
+from django.urls import path, include
 from . import views
 from journal.views import journal_view
+import chatbot.views as chatbot_views
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -19,9 +20,8 @@ urlpatterns = [
     path('monthly-report/', views.monthly_report, name='monthly_report'),
     path('logout/', views.logout_view, name="logout"),
     path('journal/', journal_view, name='journal'),
-    path('chatbot/', views.chatbot_view, name='chatbot'),
-    path('chatbot/clear/', views.clear_chatbot_view, name='clear_chatbot'),
-    path('chatbot/delete/', views.delete_chat_view, name='delete_chat'),
+    path('chatbot/', include('chatbot.urls')),
+    path('chat/', chatbot_views.chat_api, name='chat_api_root'),
     path('mood-graph/', views.mood_graph, name='mood_graph'),
     path('add-mood/', views.add_mood, name='add_mood'),
     path('selfhelp/', views.self_help, name='selfhelp'),
@@ -50,4 +50,4 @@ urlpatterns = [
     path('reading/progress/', views.reading_progress, name='reading_progress'),
     path('reading/track-time/', views.reading_track_time, name='reading_track_time'),
     path('reading/ai/', views.reading_ai, name='reading_ai'),
-]
+]
